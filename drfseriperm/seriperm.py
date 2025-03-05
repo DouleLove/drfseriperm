@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 __all__ = (
     'FieldsForPermissions',
-    'PermissionBasedSerializerFieldsMixin',
+    'PermissionBasedModelSerializerMixin',
 )
 
 import collections
 import contextlib
 import copy
+import http
 import typing
 
 import rest_framework.permissions
 import rest_framework.request
 import rest_framework.serializers
+import rest_framework.utils.model_meta
 import rest_framework.views
 
 P = typing.ParamSpec('P')
@@ -20,15 +24,41 @@ class FieldsForPermissions:
 
     def __init__(
         self,
-        *fields: typing.Iterable[str],
+        include: typing.Iterable[str] = None,
+        exclude: typing.Iterable[str] = None,
         permissions: typing.Any = None,
-        exclude: bool = False,
         extra_kwargs: dict[str, dict[str, typing.Any]] = None,
+        http_methods: typing.Iterable[str] = ...,
     ) -> None:
         self.permissions = set(permissions) if permissions else set()
-        self.fields = tuple(collections.OrderedDict.fromkeys(fields))
-        self.exclude = exclude
+        self.include = list(collections.OrderedDict.fromkeys(include or ()))
+        self.exclude = list(collections.OrderedDict.fromkeys(exclude or ()))
         self.extra_kwargs = copy.deepcopy(extra_kwargs) if extra_kwargs else {}
+        if http_methods != Ellipsis:
+            self.http_methods = list(map(str.upper, http_methods))
+        else:
+            self.http_methods = [
+                http.HTTPMethod.GET,
+                http.HTTPMethod.POST,
+                http.HTTPMethod.PUT,
+                http.HTTPMethod.PATCH,
+                http.HTTPMethod.DELETE,
+                http.HTTPMethod.HEAD,
+                http.HTTPMethod.OPTIONS,
+                http.HTTPMethod.TRACE,
+            ]
+
+    def __iter__(self) -> typing.Iterable:
+        return iter((
+            copy.copy(self.include),
+            copy.copy(self.exclude),
+            copy.copy(self.permissions),
+            copy.deepcopy(self.extra_kwargs),
+            copy.copy(self.http_methods),
+        ))
+
+    def copy(self) -> FieldsForPermissions:
+        return FieldsForPermissions(*self)
 
 
 class _SerializerContextMixin:
@@ -67,8 +97,18 @@ class _SerializerFFPsMetaMixin:
         )
 
 
-class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
-                                           _SerializerFFPsMetaMixin):
+class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
+                                          _SerializerFFPsMetaMixin):
+
+    def get_default_serializer_fields(
+        self,
+        *args: typing.Any,
+    ) -> list[str, ...]:
+        if not self._get_meta_fields() and not self._get_meta_exclude():
+            return []
+        # don't get_default_field_names(), since it's not expected by the
+        # ModelSerializer class to obtain an empty list from this method
+        return super().get_field_names(*args)
 
     @contextlib.contextmanager
     def _all_fields_meta(self) -> list[str, ...]:
@@ -83,17 +123,6 @@ class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
             self.Meta.fields = meta_fields
             self.Meta.exclude = meta_exclude
 
-    def get_default_serializer_fields(
-        self,
-        *args: typing.Any,
-    ) -> list[str, ...]:
-        if not self._get_meta_fields() and not self._get_meta_exclude():
-            return []
-        return super().get_field_names(*args).copy()
-
-    def get_default_serializer_extra_kwargs(self) -> None:
-        return super().get_extra_kwargs()
-
     def _get_user_permissions(self) -> list:
         return self._get_request().user.get_all_permissions()
 
@@ -106,12 +135,15 @@ class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
         view = self._get_view()
 
         for permission in required:
-            try:
-                if not permission().has_permission(request, view):
+            if isinstance(permission, str) and permission not in has:
+                return False
+
+            with contextlib.suppress(TypeError):
+                if not permission().has_permission(request, view, self):
                     return False
-            except TypeError:
-                if permission not in has:
-                    return False
+
+            if not permission().has_permission(request, view):
+                return False
 
         return True
 
@@ -137,36 +169,38 @@ class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
     def _filter_field_names(
         self,
         ffp: FieldsForPermissions,
+        field_names: list[str, ...],
         *args: typing.Any,
     ) -> list[str, ...]:
-        default_fields = self.get_default_serializer_fields(*args)
-        fields = default_fields.copy()
+        fields = field_names.copy()
         with self._all_fields_meta():
             all_fields = self.get_default_serializer_fields(*args)
 
-        if rest_framework.serializers.ALL_FIELDS in ffp.fields:
-            return [] if ffp.exclude else all_fields
+        ffp_include = set(ffp.include)
+        ffp_exclude = set(ffp.exclude)
 
-        for field in ffp.fields:
-            if ffp.exclude:
-                assert field in default_fields, (
-                    f'Cannot exclude field "{field}" since it is not '
-                    f'specified in "Meta.fields" of the appropriate serializer'
-                )
-
-                fields.remove(field)
+        for collection in (ffp_include, ffp_exclude):
+            if rest_framework.serializers.ALL_FIELDS not in ffp_include:
                 continue
+            collection.clear()
+            collection |= all_fields
 
-            assert field not in default_fields, (
-                f'Cannot include field "{field}" since it is already '
-                f'listed in "Meta.fields" of the corresponding serializer'
-            )
+        for field in ffp_include:
             assert field in all_fields, (
                 f'Cannot include field "{field}" since it does not belong '
                 f'neither to the serializer nor to the model'
             )
 
-            fields.append(field)
+            assert field not in ffp_exclude, (
+                f'Cannot both include and exclude field "{field}"'
+            )
+
+            if field not in fields:
+                fields.append(field)
+
+        for exclude_field in ffp_exclude:
+            if exclude_field in fields:
+                fields.remove(exclude_field)
 
         return fields
 
@@ -203,7 +237,13 @@ class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
         field_names: list[str, ...],
         *args: typing.Any,
     ) -> list[str, ...]:
-        for field in self._filter_field_names(ffp, *args):
+        request_method = self._get_request().method.upper()
+        ffp_methods = list(map(str.upper, ffp.http_methods))
+
+        if request_method not in ffp_methods:
+            return field_names
+
+        for field in self._filter_field_names(ffp, field_names, *args):
             if field not in field_names:
                 field_names.append(field)
 
@@ -233,6 +273,9 @@ class PermissionBasedSerializerFieldsMixin(_SerializerContextMixin,
                 extra_kwargs[field][k] = v
 
         return extra_kwargs
+
+    def get_default_serializer_extra_kwargs(self) -> None:
+        return super().get_extra_kwargs()
 
     def get_extra_kwargs(self) -> dict[str, dict[str, typing.Any]]:
         return self._reduce_ffps(
