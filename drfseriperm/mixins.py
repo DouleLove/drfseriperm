@@ -1,124 +1,21 @@
 from __future__ import annotations
 
-__all__ = (
-    'FieldsForPermissions',
-    'PermissionBasedModelSerializerMixin',
-)
+__all__ = ('PermissionBasedModelSerializerMixin',)
 
-import collections
 import contextlib
 import copy
-import http
 import typing
 
+import rest_framework.exceptions
 import rest_framework.permissions
 import rest_framework.request
 import rest_framework.serializers
-import rest_framework.utils.model_meta
 import rest_framework.views
 
+from .ffp import FieldsForPermissions
+from .missing import MISSING
+
 P = typing.ParamSpec('P')
-
-
-class FieldsForPermissions:
-    """
-    data container to be passed into PermissionBasedSerializerMixin
-    """
-
-    def __init__(
-        self,
-        include: typing.Iterable[str] = None,
-        exclude: typing.Iterable[str] = None,
-        permissions: typing.Iterable[
-            rest_framework.permissions.BasePermission | str
-        ] = None,
-        extra_kwargs: dict[str, dict[str, typing.Any]] = None,
-        http_methods: typing.Iterable[str] = ...,
-    ) -> None:
-        """
-        Parameters
-        ----------
-        include:
-          fields to be included in the list of serializable fields
-        exclude:
-          fields to be excluded from the list of serializable fields
-        permissions:
-          permission which are needed to include or exclude fields from
-          the list of serializable fields
-        extra_kwargs:
-          field_name-kwargs pairs which are used to modify fields
-          (e.g. make them read-only), you can view all the allowed
-          values for this parameter in the Django REST framework
-          documentation
-        http_methods:
-          names of http methods for which include/exclude/extra_kwargs
-          parameters should be applied
-        """
-
-        self.include = self._format_fields(include)
-        self.exclude = self._format_fields(exclude)
-        self.permissions = self._format_permissions(permissions)
-        self.extra_kwargs = self._format_extra_kwargs(extra_kwargs)
-        self.http_methods = self._format_http_methods(http_methods)
-
-    @staticmethod
-    def _format_fields(fields: typing.Iterable[str] | None) -> list[str]:
-        if fields is None:
-            return []
-
-        if (
-            fields == rest_framework.serializers.ALL_FIELDS
-            or rest_framework.serializers.ALL_FIELDS in fields
-        ):
-            return rest_framework.serializers.ALL_FIELDS
-
-        return list(collections.OrderedDict.fromkeys(fields))
-
-    @staticmethod
-    def _format_permissions(
-        permissions: typing.Iterable[
-            rest_framework.permissions.BasePermission | str
-        ] | None,
-    ) -> set[rest_framework.permissions.BasePermission | str, ...]:
-        return set(permissions) if permissions is not None else set()
-
-    @staticmethod
-    def _format_extra_kwargs(
-        extra_kwargs: dict[str, dict[str, typing.Any]] | None,
-    ) -> dict[str, dict[str, typing.Any]]:
-        return copy.deepcopy(extra_kwargs) if extra_kwargs is not None else {}
-
-    @staticmethod
-    def _format_http_methods(
-        http_methods: typing.Iterable[str] | Ellipsis,
-    ) -> list[str, ...]:
-        if http_methods != Ellipsis:
-            return list(map(str.upper, http_methods))
-
-        return [
-            http.HTTPMethod.GET,
-            http.HTTPMethod.POST,
-            http.HTTPMethod.PUT,
-            http.HTTPMethod.PATCH,
-            http.HTTPMethod.DELETE,
-            http.HTTPMethod.HEAD,
-            http.HTTPMethod.OPTIONS,
-            http.HTTPMethod.TRACE,
-        ]
-
-    def __iter__(self) -> typing.Iterable:
-        return iter((
-            copy.copy(self.include),
-            copy.copy(self.exclude),
-            copy.copy(self.permissions),
-            copy.deepcopy(self.extra_kwargs),
-            copy.copy(self.http_methods),
-        ))
-
-    def __copy__(self) -> FieldsForPermissions:
-        return FieldsForPermissions(*self)
-
-    copy = __copy__
 
 
 class _SerializerContextMixin:
@@ -130,13 +27,22 @@ class _SerializerContextMixin:
         return self.context['view']
 
 
-class _SerializerFFPsMetaMixin:
+class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
+
+    def _get_meta_attr(
+        self,
+        attr_name: str,
+        default: typing.Any = MISSING,
+    ) -> typing.Any:
+        if default is MISSING:
+            return getattr(self.Meta, attr_name)
+        return getattr(self.Meta, attr_name, default)
 
     def _get_meta_fields(self) -> list[str, ...] | None:
-        return getattr(self.Meta, 'fields', None)
+        return self._get_meta_attr('fields', None)
 
     def _get_meta_exclude(self) -> list[str, ...] | None:
-        return getattr(self.Meta, 'exclude', None)
+        return self._get_meta_attr('exclude', None)
 
     def get_list_ffps(
         self,
@@ -149,7 +55,7 @@ class _SerializerFFPsMetaMixin:
         Otherwise, empty list will be returned
         """
 
-        return getattr(self.Meta, 'list_fields_for_permissions', [])
+        return self._get_meta_attr('list_fields_for_permissions', [])
 
     def get_ffps_reverse_state(self) -> bool:
         """
@@ -161,7 +67,10 @@ class _SerializerFFPsMetaMixin:
         Otherwise, False will be returned
         """
 
-        return getattr(self.Meta, 'reverse_list_fields_for_permissions', False)
+        return self._get_meta_attr(
+            'reverse_list_fields_for_permissions',
+            False,
+        )
 
     def get_ffps_inherit_state(self) -> bool:
         """
@@ -175,7 +84,7 @@ class _SerializerFFPsMetaMixin:
         Otherwise, True will be returned
         """
 
-        return getattr(self.Meta, 'inherit_list_fields_for_permissions', True)
+        return self._get_meta_attr('inherit_list_fields_for_permissions', True)
 
     def get_extra_kwargs_inherit_state(self) -> bool:
         """
@@ -189,15 +98,47 @@ class _SerializerFFPsMetaMixin:
         Otherwise, True will be returned
         """
 
-        return getattr(
-            self.Meta,
+        return self._get_meta_attr(
             'inherit_fields_for_permissions_extra_kwargs',
             True,
         )
 
+    def get_raise_for_no_fields_state(self) -> bool:
+        """
+        returns boolean value indicating if
+        we should raise exception when there are no fields
+        to be serialized.
+        If "raise_for_no_fields" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, True will be returned
+        """
 
-class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
-                                          _SerializerFFPsMetaMixin):
+        return self._get_meta_attr('raise_for_no_fields', True)
+
+    def get_no_fields_exception(
+        self,
+    ) -> typing.Type[rest_framework.exceptions.APIException]:
+        """
+        returns exception instance (or exception class itself)
+        which will be raised if there is no fields to show
+        for a user for the request method.
+        If "no_fields_exception" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, :class:`rest_framework.exceptions.MethodNotAllowed`
+        instance will be returned
+        """
+
+        return self._get_meta_attr(
+            'no_fields_exception',
+            rest_framework.exceptions.MethodNotAllowed(
+                self._get_request().method,
+            ),
+        )
+
+
+class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
     def get_default_serializer_fields(
         self,
@@ -456,3 +397,30 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
             inherit=self.get_extra_kwargs_inherit_state(),
             default=self.get_default_serializer_extra_kwargs(),
         )
+
+    def _is_empty_fields_list(self, *fields: rest_framework) -> bool:
+        method = self._get_request().method
+        if method in rest_framework.permissions.SAFE_METHODS:
+            negative_lookup_field_attr = 'write_only'
+        else:
+            negative_lookup_field_attr = 'read_only'
+
+        for field in fields:
+            if not getattr(field, negative_lookup_field_attr):
+                return False
+
+        return True
+
+    def get_fields(self) -> dict[
+        str,
+        rest_framework.fields.Field | list[rest_framework.fields.Field, ...]
+    ]:
+        fields = super().get_fields()
+
+        if (
+            self._is_empty_fields_list(*fields.values())
+            and self.get_raise_for_no_fields_state()
+        ):
+            raise self.get_no_fields_exception()
+
+        return fields
