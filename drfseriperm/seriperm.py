@@ -26,27 +26,61 @@ class FieldsForPermissions:
         self,
         include: typing.Iterable[str] = None,
         exclude: typing.Iterable[str] = None,
-        permissions: typing.Any = None,
+        permissions: typing.Iterable[
+            rest_framework.permissions.BasePermission | str
+        ] = None,
         extra_kwargs: dict[str, dict[str, typing.Any]] = None,
         http_methods: typing.Iterable[str] = ...,
     ) -> None:
-        self.permissions = set(permissions) if permissions else set()
-        self.include = list(collections.OrderedDict.fromkeys(include or ()))
-        self.exclude = list(collections.OrderedDict.fromkeys(exclude or ()))
-        self.extra_kwargs = copy.deepcopy(extra_kwargs) if extra_kwargs else {}
+        self.include = self._format_fields(include)
+        self.exclude = self._format_fields(exclude)
+        self.permissions = self._format_permissions(permissions)
+        self.extra_kwargs = self._format_extra_kwargs(extra_kwargs)
+        self.http_methods = self._format_http_methods(http_methods)
+
+    def _format_fields(self, fields: typing.Iterable[str] | None) -> list[str]:
+        if fields is None:
+            return []
+
+        if (
+            fields == rest_framework.serializers.ALL_FIELDS
+            or rest_framework.serializers.ALL_FIELDS in fields
+        ):
+            return rest_framework.serializers.ALL_FIELDS
+
+        return list(collections.OrderedDict.fromkeys(fields))
+
+    def _format_permissions(
+        self,
+        permissions: typing.Iterable[
+            rest_framework.permissions.BasePermission | str
+        ] | None,
+    ) -> set[rest_framework.permissions.BasePermission | str, ...]:
+        return set(permissions) if permissions is not None else set()
+
+    def _format_extra_kwargs(
+        self,
+        extra_kwargs: dict[str, dict[str, typing.Any]] | None,
+    ) -> dict[str, dict[str, typing.Any]]:
+        return copy.deepcopy(extra_kwargs) if extra_kwargs is not None else {}
+
+    def _format_http_methods(
+        self,
+        http_methods: typing.Iterable[str] | Ellipsis,
+    ) -> list[str, ...]:
         if http_methods != Ellipsis:
-            self.http_methods = list(map(str.upper, http_methods))
-        else:
-            self.http_methods = [
-                http.HTTPMethod.GET,
-                http.HTTPMethod.POST,
-                http.HTTPMethod.PUT,
-                http.HTTPMethod.PATCH,
-                http.HTTPMethod.DELETE,
-                http.HTTPMethod.HEAD,
-                http.HTTPMethod.OPTIONS,
-                http.HTTPMethod.TRACE,
-            ]
+            return list(map(str.upper, http_methods))
+
+        return [
+            http.HTTPMethod.GET,
+            http.HTTPMethod.POST,
+            http.HTTPMethod.PUT,
+            http.HTTPMethod.PATCH,
+            http.HTTPMethod.DELETE,
+            http.HTTPMethod.HEAD,
+            http.HTTPMethod.OPTIONS,
+            http.HTTPMethod.TRACE,
+        ]
 
     def __iter__(self) -> typing.Iterable:
         return iter((
@@ -57,8 +91,10 @@ class FieldsForPermissions:
             copy.copy(self.http_methods),
         ))
 
-    def copy(self) -> FieldsForPermissions:
+    def __copy__(self) -> FieldsForPermissions:
         return FieldsForPermissions(*self)
+
+    copy = __copy__
 
 
 class _SerializerContextMixin:
@@ -176,14 +212,10 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         with self._all_fields_meta():
             all_fields = self.get_default_serializer_fields(*args)
 
-        ffp_include = set(ffp.include)
-        ffp_exclude = set(ffp.exclude)
-
-        for collection in (ffp_include, ffp_exclude):
-            if rest_framework.serializers.ALL_FIELDS not in ffp_include:
-                continue
-            collection.clear()
-            collection |= all_fields
+        ffp_include, ffp_exclude = (
+            f if f != rest_framework.serializers.ALL_FIELDS else all_fields
+            for f in (ffp.include, ffp.exclude)
+        )
 
         for field in ffp_include:
             assert field in all_fields, (
@@ -204,8 +236,8 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
 
         return fields
 
-    @staticmethod
     def _reduce_ffps(
+        self,
         *ffps: FieldsForPermissions,
         callback: typing.Callable[
             [P.args, P.kwargs],
@@ -227,6 +259,12 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         joined = copy.deepcopy(default)
 
         for ffp in ffps:
+            request_method = self._get_request().method.upper()
+            ffp_methods = map(str.upper, ffp.http_methods)
+
+            if request_method not in ffp_methods:
+                continue
+
             joined = callback(ffp, joined, *callback_args, **callback_kwargs)
 
         return joined
@@ -237,12 +275,6 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         field_names: list[str, ...],
         *args: typing.Any,
     ) -> list[str, ...]:
-        request_method = self._get_request().method.upper()
-        ffp_methods = list(map(str.upper, ffp.http_methods))
-
-        if request_method not in ffp_methods:
-            return field_names
-
         for field in self._filter_field_names(ffp, field_names, *args):
             if field not in field_names:
                 field_names.append(field)
