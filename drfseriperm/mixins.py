@@ -21,6 +21,9 @@ P = typing.ParamSpec('P')
 
 
 class FieldsForPermissions:
+    """
+    data container to be passed into PermissionBasedSerializerMixin
+    """
 
     def __init__(
         self,
@@ -32,13 +35,34 @@ class FieldsForPermissions:
         extra_kwargs: dict[str, dict[str, typing.Any]] = None,
         http_methods: typing.Iterable[str] = ...,
     ) -> None:
+        """
+        Parameters
+        ----------
+        include:
+          fields to be included in the list of serializable fields
+        exclude:
+          fields to be excluded from the list of serializable fields
+        permissions:
+          permission which are needed to include or exclude fields from
+          the list of serializable fields
+        extra_kwargs:
+          field_name-kwargs pairs which are used to modify fields
+          (e.g. make them read-only), you can view all the allowed
+          values for this parameter in the Django REST framework
+          documentation
+        http_methods:
+          names of http methods for which include/exclude/extra_kwargs
+          parameters should be applied
+        """
+
         self.include = self._format_fields(include)
         self.exclude = self._format_fields(exclude)
         self.permissions = self._format_permissions(permissions)
         self.extra_kwargs = self._format_extra_kwargs(extra_kwargs)
         self.http_methods = self._format_http_methods(http_methods)
 
-    def _format_fields(self, fields: typing.Iterable[str] | None) -> list[str]:
+    @staticmethod
+    def _format_fields(fields: typing.Iterable[str] | None) -> list[str]:
         if fields is None:
             return []
 
@@ -50,22 +74,22 @@ class FieldsForPermissions:
 
         return list(collections.OrderedDict.fromkeys(fields))
 
+    @staticmethod
     def _format_permissions(
-        self,
         permissions: typing.Iterable[
             rest_framework.permissions.BasePermission | str
         ] | None,
     ) -> set[rest_framework.permissions.BasePermission | str, ...]:
         return set(permissions) if permissions is not None else set()
 
+    @staticmethod
     def _format_extra_kwargs(
-        self,
         extra_kwargs: dict[str, dict[str, typing.Any]] | None,
     ) -> dict[str, dict[str, typing.Any]]:
         return copy.deepcopy(extra_kwargs) if extra_kwargs is not None else {}
 
+    @staticmethod
     def _format_http_methods(
-        self,
         http_methods: typing.Iterable[str] | Ellipsis,
     ) -> list[str, ...]:
         if http_methods != Ellipsis:
@@ -117,15 +141,54 @@ class _SerializerFFPsMetaMixin:
     def get_list_ffps(
         self,
     ) -> list[FieldsForPermissions, ...]:
+        """
+        returns the list of :class:`FieldsForPermissions`.
+        If "list_fields_for_permissions" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, empty list will be returned
+        """
+
         return getattr(self.Meta, 'list_fields_for_permissions', [])
 
     def get_ffps_reverse_state(self) -> bool:
+        """
+        returns the boolean value which indicates if
+        we should reverse list of fields for permissions.
+        If "reverse_list_fields_for_permissions" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, False will be returned
+        """
+
         return getattr(self.Meta, 'reverse_list_fields_for_permissions', False)
 
     def get_ffps_inherit_state(self) -> bool:
+        """
+        returns the boolean value which indicates if
+        we should inherit the include/exclude parameters of the previous
+        allowed for the user, which is accessing the endpoint,
+        :class:`FieldsForPermissions`.
+        If "inherit_list_fields_for_permissions" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, True will be returned
+        """
+
         return getattr(self.Meta, 'inherit_list_fields_for_permissions', True)
 
     def get_extra_kwargs_inherit_state(self) -> bool:
+        """
+        returns the boolean value which indicates if
+        we should inherit the extra_kwargs parameter of the previous
+        allowed for the user, which is accessing the endpoint,
+        :class:`FieldsForPermissions`.
+        If "inherit_fields_for_permissions_extra_kwargs" attribute of
+        "Meta" class inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, True will be returned
+        """
+
         return getattr(
             self.Meta,
             'inherit_fields_for_permissions_extra_kwargs',
@@ -140,14 +203,28 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         self,
         *args: typing.Any,
     ) -> list[str, ...]:
+        """
+        builds the list of field names
+        from model's fields and the field names
+        specified in Meta.fields and Meta.exclude,
+        if no one of Meta attributes mentioned above is specified,
+        then an empty list is returned
+        """
+
         if not self._get_meta_fields() and not self._get_meta_exclude():
             return []
-        # don't get_default_field_names(), since it's not expected by the
-        # ModelSerializer class to obtain an empty list from this method
+        # don't override get_default_field_names(),
+        # since the super method is not expecting to obtain an empty list
         return super().get_field_names(*args)
 
     @contextlib.contextmanager
     def _all_fields_meta(self) -> list[str, ...]:
+        """
+        contextmanager which mocks the
+        Meta.fields attribute to have ALL_FIELDS value
+        and Meta.exclude to have a value of an empty list
+        """
+
         meta_fields = self._get_meta_fields()
         meta_exclude = self._get_meta_exclude()
 
@@ -159,7 +236,14 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
             self.Meta.fields = meta_fields
             self.Meta.exclude = meta_exclude
 
-    def _get_user_permissions(self) -> list:
+    def _get_user_permissions(
+            self,
+    ) -> list[rest_framework.permissions.BasePermission, ...]:
+        """
+        returns the list of all the permissions
+        (:class:`BasePermissions`) which user has
+        """
+
         return self._get_request().user.get_all_permissions()
 
     def _check_permissions(
@@ -167,6 +251,12 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         required: list[str | rest_framework.permissions.BasePermission, ...],
         has: list[str, ...],
     ) -> bool:
+        """
+        compares the user permissions and the required permissions
+        and returns the boolean value indicating if user has enough
+        permission to have the current ffp, for which checking, applied
+        """
+
         request = self._get_request()
         view = self._get_view()
 
@@ -184,6 +274,11 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         return True
 
     def get_user_permitted_ffps(self) -> list[FieldsForPermissions, ...]:
+        """
+        returns the list of :class:`FieldsForPermissions` which should
+        be applied to the serializer depending on user's permissions
+        """
+
         user_permissions = self._get_user_permissions()
         permissions_ffps = self.get_list_ffps()
         if self.get_ffps_reverse_state():
@@ -208,10 +303,20 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         field_names: list[str, ...],
         *args: typing.Any,
     ) -> list[str, ...]:
+        """
+        joins ffp's include and exclude fields
+        with field_names (list of field names inherited
+        from the ffp placed above, or lower
+        if reversing order with
+        reverse_list_fields_for_permissions = True)
+        """
+
         fields = field_names.copy()
         with self._all_fields_meta():
             all_fields = self.get_default_serializer_fields(*args)
 
+        # getting include/exclude fields
+        # and replacing ALL_FIELDS with real fields
         ffp_include, ffp_exclude = (
             f if f != rest_framework.serializers.ALL_FIELDS else all_fields
             for f in (ffp.include, ffp.exclude)
@@ -248,6 +353,13 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         inherit: bool = True,
         default: typing.Iterable = None,
     ) -> typing.Collection | None:
+        """
+        joins all the ffps given with checking
+        inherit state, checking request method and
+        calling the filtering method. Should be called
+        for reducing field names and extra kwargs stacks
+        """
+
         if not callback_args:
             callback_args = ()
         if not callback_kwargs:
@@ -275,6 +387,11 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         field_names: list[str, ...],
         *args: typing.Any,
     ) -> list[str, ...]:
+        """
+        callback to be passed into the _reduce_ffps()
+        method to join all the field names into a single list
+        """
+
         for field in self._filter_field_names(ffp, field_names, *args):
             if field not in field_names:
                 field_names.append(field)
@@ -282,6 +399,16 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         return field_names
 
     def get_field_names(self, *args: typing.Any) -> list[str, ...]:
+        """
+        gets field names to be serialized for the current request
+
+        Parameters
+        ----------
+        args:
+          declared_fields and info, you can read more about them
+          from the Django REST framework documentation
+        """
+
         return self._reduce_ffps(
             *self.get_user_permitted_ffps(),
             callback=self._reduce_field_names_callback,
@@ -295,6 +422,11 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         ffp: FieldsForPermissions,
         extra_kwargs: dict[str, dict[str, typing.Any]],
     ) -> dict[str, dict[str, typing.Any]]:
+        """
+        callback to be passed into the _reduce_ffps()
+        method to join all the extra kwargs into a single dictionary
+        """
+
         for field, kwargs in ffp.extra_kwargs.items():
             field_kwargs = copy.deepcopy(kwargs)
 
@@ -307,9 +439,17 @@ class PermissionBasedModelSerializerMixin(_SerializerContextMixin,
         return extra_kwargs
 
     def get_default_serializer_extra_kwargs(self) -> None:
+        """
+        gets extra kwargs specified in Meta.extra_kwargs
+        """
+
         return super().get_extra_kwargs()
 
     def get_extra_kwargs(self) -> dict[str, dict[str, typing.Any]]:
+        """
+        gets serializer fields' extra kwargs for the current request
+        """
+
         return self._reduce_ffps(
             *self.get_user_permitted_ffps(),
             callback=self._reduce_extra_kwargs_callback,

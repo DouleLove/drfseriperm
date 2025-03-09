@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+__all__ = ('FieldsForPermissions',)
+
+import collections
+import copy
+import http
+import typing
+
+import rest_framework.permissions
+import rest_framework.serializers
+
+from .missing import MISSING
+
+
+class FieldsForPermissions:
+    """
+    data container to be passed into PermissionBasedSerializerMixin
+    """
+
+    def __init__(
+        self,
+        include: typing.Iterable[str] = MISSING,
+        exclude: typing.Iterable[str] = MISSING,
+        permissions: typing.Iterable[
+            rest_framework.permissions.BasePermission | str
+        ] = MISSING,
+        extra_kwargs: dict[str, dict[str, typing.Any]] = MISSING,
+        http_methods: typing.Iterable[str] = MISSING,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        include:
+          fields to be included in the list of serializable fields
+        exclude:
+          fields to be excluded from the list of serializable fields
+        permissions:
+          permission which are needed to include or exclude fields from
+          the list of serializable fields
+        extra_kwargs:
+          field_name-kwargs pairs which are used to modify fields
+          (e.g. make them read-only), you can view all the allowed
+          values for this parameter in the Django REST framework
+          documentation
+        http_methods:
+          names of http methods for which include/exclude/extra_kwargs
+          parameters should be applied
+        """
+
+        self._setup_parameters(
+            include=include,
+            exclude=exclude,
+            permissions=permissions,
+            extra_kwargs=extra_kwargs,
+            http_methods=http_methods,
+        )
+
+    def _setup_parameters(self, **parameters: typing.Any) -> None:
+        for parameter in parameters:
+            if parameters[parameter] is MISSING:
+                parameters[parameter] = getattr(self, parameter, MISSING)
+            setattr(self, parameter, parameters[parameter])
+
+        self._format_include()
+        self._format_exclude()
+        self._format_permissions()
+        self._format_extra_kwargs()
+        self._format_http_methods()
+
+    @staticmethod
+    def _format_fields(fields: typing.Iterable[str] | MISSING) -> list[str]:
+        if fields is MISSING:
+            return []
+
+        if (
+            fields == rest_framework.serializers.ALL_FIELDS
+            or rest_framework.serializers.ALL_FIELDS in fields
+        ):
+            return rest_framework.serializers.ALL_FIELDS
+
+        return list(collections.OrderedDict.fromkeys(fields))
+
+    def _format_include(self) -> None:
+        self.include = self._format_fields(self.include)
+
+    def _format_exclude(self) -> None:
+        self.exclude = self._format_fields(self.exclude)
+
+    def _format_permissions(
+        self,
+    ) -> set[rest_framework.permissions.BasePermission | str, ...]:
+        if self.permissions is MISSING:
+            self.permissions = set()
+        self.permissions = set(self.permissions)
+
+    def _format_extra_kwargs(self) -> dict[str, dict[str, typing.Any]]:
+        if self.extra_kwargs is MISSING:
+            self.extra_kwargs = {}
+        self.extra_kwargs = copy.deepcopy(self.extra_kwargs)
+
+    def _format_http_methods(self) -> list[str, ...]:
+        if self.http_methods is MISSING:
+            self.http_methods = [
+                http.HTTPMethod.GET,
+                http.HTTPMethod.POST,
+                http.HTTPMethod.PUT,
+                http.HTTPMethod.PATCH,
+                http.HTTPMethod.DELETE,
+                http.HTTPMethod.HEAD,
+                http.HTTPMethod.OPTIONS,
+                http.HTTPMethod.TRACE,
+            ]
+
+        self.http_methods = list(map(str.upper, self.http_methods))
+
+    def __iter__(self) -> typing.Iterable:
+        return iter((
+            copy.copy(self.include),
+            copy.copy(self.exclude),
+            copy.copy(self.permissions),
+            copy.deepcopy(self.extra_kwargs),
+            copy.copy(self.http_methods),
+        ))
+
+    def __copy__(self) -> FieldsForPermissions:
+        return FieldsForPermissions(*self)
+
+    copy = __copy__
