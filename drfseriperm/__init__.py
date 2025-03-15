@@ -13,7 +13,7 @@ __title__ = 'drfseriperm'
 __author__ = 'DouleLove'
 __license__ = 'MIT'
 __copyright__ = 'Copyright 2025-present DouleLove'
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 from .ffp import *
 from .missing import *
