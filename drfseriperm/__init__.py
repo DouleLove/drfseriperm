@@ -7,7 +7,6 @@ Library for Django REST framework which provides permissions-based serialization
 
 :copyright: (c) 2025-present DouleLove
 :license: MIT, see LICENSE file for more details.
-
 """
 
 __title__ = 'drfseriperm'
