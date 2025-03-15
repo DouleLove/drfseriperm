@@ -38,28 +38,64 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
             return getattr(self.Meta, attr_name)
         return getattr(self.Meta, attr_name, default)
 
-    def _get_meta_fields(self) -> list[str, ...] | None:
+    def get_meta_fields(self) -> list[str, ...] | None:
+        """
+        returns a list of field names to be included in all ffps.
+        If "fields" attribute of "Meta" class
+        inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, None will be returned
+        """
+
         return self._get_meta_attr('fields', None)
 
-    def _get_meta_exclude(self) -> list[str, ...] | None:
+    def get_meta_exclude(self) -> list[str, ...] | None:
+        """
+        returns a list of field names to be excluded from all ffps.
+        If "exclude" attribute of "Meta" class
+        inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, None will be returned
+        """
+
         return self._get_meta_attr('exclude', None)
 
-    def get_list_ffps(
-        self,
-    ) -> list[FieldsForPermissions, ...]:
+    def get_meta_extra_kwargs(self) -> None:
         """
-        returns the list of :class:`FieldsForPermissions`.
+        returns a dictionary (field_name: field_properties_dict) pairs
+        with an extra kwargs for serializable fields.
+        If "extra_kwargs" attribute of "Meta" class
+        inside the serializer is specified,
+        then the value will be obtained from it.
+        Otherwise, empty dictionary will be returned
+        """
+
+        return super().get_extra_kwargs()
+
+    def get_list_ffps(self) -> list[FieldsForPermissions, ...]:
+        """
+        returns a list of :class:`FieldsForPermissions`.
         If "list_fields_for_permissions" attribute of
         "Meta" class inside the serializer is specified,
         then the value will be obtained from it.
         Otherwise, empty list will be returned
         """
 
-        return self._get_meta_attr('list_fields_for_permissions', [])
+        list_ffps = self._get_meta_attr('list_fields_for_permissions', [])
+
+        for idx, ffp in enumerate(list_ffps):
+            if not isinstance(ffp, FieldsForPermissions):
+                list_ffps[idx] = ffp()
+                assert isinstance(list_ffps[idx], FieldsForPermissions), (
+                    'given object is not an instance or a class of'
+                    ':class:`FieldsForPermissions`'
+                )
+
+        return list_ffps
 
     def get_ffps_reverse_state(self) -> bool:
         """
-        returns the boolean value which indicates if
+        returns a boolean value which indicates if
         we should reverse list of fields for permissions.
         If "reverse_list_fields_for_permissions" attribute of
         "Meta" class inside the serializer is specified,
@@ -74,7 +110,7 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
 
     def get_ffps_inherit_state(self) -> bool:
         """
-        returns the boolean value which indicates if
+        returns a boolean value which indicates if
         we should inherit the include/exclude parameters of the previous
         allowed for the user, which is accessing the endpoint,
         :class:`FieldsForPermissions`.
@@ -88,7 +124,7 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
 
     def get_extra_kwargs_inherit_state(self) -> bool:
         """
-        returns the boolean value which indicates if
+        returns a boolean value which indicates if
         we should inherit the extra_kwargs parameter of the previous
         allowed for the user, which is accessing the endpoint,
         :class:`FieldsForPermissions`.
@@ -105,7 +141,7 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
 
     def get_raise_for_no_fields_state(self) -> bool:
         """
-        returns boolean value indicating if
+        returns a boolean value indicating if
         we should raise exception when there are no fields
         to be serialized.
         If "raise_for_no_fields" attribute of
@@ -120,7 +156,7 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
         self,
     ) -> typing.Type[rest_framework.exceptions.APIException]:
         """
-        returns exception instance (or exception class itself)
+        returns an exception instance (or exception class itself)
         which will be raised if there is no fields to show
         for a user for the request method.
         If "no_fields_exception" attribute of
@@ -140,24 +176,6 @@ class _SerializerFFPsContextMetaMixin(_SerializerContextMixin):
 
 class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
-    def get_default_serializer_fields(
-        self,
-        *args: typing.Any,
-    ) -> list[str, ...]:
-        """
-        builds the list of field names
-        from model's fields and the field names
-        specified in Meta.fields and Meta.exclude,
-        if no one of Meta attributes mentioned above is specified,
-        then an empty list is returned
-        """
-
-        # don't override get_default_field_names() method,
-        # since the super method is not expecting to obtain an empty list
-        if not self._get_meta_fields() and not self._get_meta_exclude():
-            return []
-        return super().get_field_names(*args)
-
     @contextlib.contextmanager
     def _all_fields_meta(self) -> list[str, ...]:
         """
@@ -176,6 +194,10 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         finally:
             self.Meta.fields = meta_fields
             self.Meta.exclude = meta_exclude
+
+    def _get_all_field_names(self, *args: typing.Any) -> list[str, ...]:
+        with self._all_fields_meta():
+            return super().get_field_names(*args)
 
     def _get_user_permissions(
             self,
@@ -254,7 +276,7 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
         fields = field_names.copy()
         with self._all_fields_meta():
-            all_fields = self.get_default_serializer_fields(*args)
+            all_fields = self._get_all_field_names(*args)
 
         # getting include/exclude fields
         # and replacing ALL_FIELDS with real fields
@@ -309,7 +331,7 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         if not inherit:
             ffps = (ffps[-1],) if ffps else ()
 
-        joined = copy.deepcopy(default)
+        joined = copy.deepcopy(default if default is not None else [])
 
         for ffp in ffps:
             request_method = self._get_request().method.upper()
@@ -352,10 +374,14 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
         return self._reduce_ffps(
             *self.get_user_permitted_ffps(),
+            FieldsForPermissions(
+                include=self._get_meta_fields() or [],
+                exclude=self._get_meta_exclude() or [],
+            ),
             callback=self._reduce_field_names_callback,
             callback_args=args,
             inherit=self.get_ffps_inherit_state(),
-            default=self.get_default_serializer_fields(),
+            default=[],
         )
 
     @staticmethod
@@ -379,13 +405,6 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
         return extra_kwargs
 
-    def get_default_serializer_extra_kwargs(self) -> None:
-        """
-        gets extra kwargs specified in Meta.extra_kwargs
-        """
-
-        return super().get_extra_kwargs()
-
     def get_extra_kwargs(self) -> dict[str, dict[str, typing.Any]]:
         """
         gets serializer fields' extra kwargs for the current request
@@ -393,9 +412,12 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
 
         return self._reduce_ffps(
             *self.get_user_permitted_ffps(),
+            FieldsForPermissions(
+                extra_kwargs=self.get_meta_extra_kwargs(),
+            ),
             callback=self._reduce_extra_kwargs_callback,
             inherit=self.get_extra_kwargs_inherit_state(),
-            default=self.get_default_serializer_extra_kwargs(),
+            default={},
         )
 
     def _is_empty_fields_list(self, *fields: rest_framework) -> bool:
