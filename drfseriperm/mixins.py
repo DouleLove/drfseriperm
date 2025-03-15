@@ -152,10 +152,10 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         then an empty list is returned
         """
 
+        # don't override get_default_field_names() method,
+        # since the super method is not expecting to obtain an empty list
         if not self._get_meta_fields() and not self._get_meta_exclude():
             return []
-        # don't override get_default_field_names(),
-        # since the super method is not expecting to obtain an empty list
         return super().get_field_names(*args)
 
     @contextlib.contextmanager
@@ -296,7 +296,7 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
     ) -> typing.Collection | None:
         """
         joins all the ffps given with checking
-        inherit state, checking request method and
+        inherit state and request method and
         calling the filtering method. Should be called
         for reducing field names and extra kwargs stacks
         """
@@ -399,8 +399,17 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         )
 
     def _is_empty_fields_list(self, *fields: rest_framework) -> bool:
-        method = self._get_request().method
-        if method in rest_framework.permissions.SAFE_METHODS:
+        """
+        checks if there is at least one field to display
+        for a user according to request method
+        """
+
+        request_http_method = self._get_request().method
+        # If request method is safe (GET, HEAD, OPTIONS)
+        # then fields should not have 'write_only' extra kwarg
+        # to be displayed. Otherwise, fields should not have 'read_only'
+        # extra kwarg to be displayed
+        if request_http_method in rest_framework.permissions.SAFE_METHODS:
             negative_lookup_field_attr = 'write_only'
         else:
             negative_lookup_field_attr = 'read_only'
@@ -417,6 +426,7 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
     ]:
         fields = super().get_fields()
 
+        # raise for empty fields list if raise state is True
         if (
             self._is_empty_fields_list(*fields.values())
             and self.get_raise_for_no_fields_state()
