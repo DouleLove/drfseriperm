@@ -184,8 +184,8 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         and Meta.exclude to have a value of an empty list
         """
 
-        meta_fields = self._get_meta_fields()
-        meta_exclude = self._get_meta_exclude()
+        meta_fields = self.get_meta_fields()
+        meta_exclude = self.get_meta_exclude()
 
         try:
             self.Meta.fields = rest_framework.serializers.ALL_FIELDS
@@ -375,8 +375,8 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         return self._reduce_ffps(
             *self.get_user_permitted_ffps(),
             FieldsForPermissions(
-                include=self._get_meta_fields() or [],
-                exclude=self._get_meta_exclude() or [],
+                include=self.get_meta_fields() or [],
+                exclude=self.get_meta_exclude() or [],
             ),
             callback=self._reduce_field_names_callback,
             callback_args=args,
