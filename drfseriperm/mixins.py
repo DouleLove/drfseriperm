@@ -309,7 +309,7 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         *ffps: FieldsForPermissions,
         callback: typing.Callable[
             [P.args, P.kwargs],
-            typing.Iterable[typing.Any],
+            typing.Iterable,
         ],
         callback_args: typing.Iterable = None,
         callback_kwargs: dict[str, typing.Any] = None,
@@ -443,8 +443,8 @@ class PermissionBasedModelSerializerMixin(_SerializerFFPsContextMetaMixin):
         return True
 
     def get_fields(self) -> dict[
-        str,
-        rest_framework.fields.Field | list[rest_framework.fields.Field, ...]
+        str, rest_framework.serializers.Field
+        | list[rest_framework.serializers.Field, ...]
     ]:
         fields = super().get_fields()
 
